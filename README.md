@@ -41,11 +41,11 @@ These improvements are active research, they are personal ideas and go beyond Mu
 
 All performances are tracked and displayed in real time in [TensorBoard](https://www.tensorflow.org/tensorboard) :
 
-![cartpole training summary](https://github.com/werner-duvaud/muzero-general/blob/master/docs/cartpole-training-summary.png)
+![cartpole training summary](docs/cartpole-training-summary.png)
 
 Testing Lunar Lander :
 
-![lunarlander training preview](https://github.com/werner-duvaud/muzero-general/blob/master/docs/lunarlander-training-preview.png)
+![lunarlander training preview](docs/lunarlander-training-preview.png)
 
 ## Games already implemented
 
@@ -62,13 +62,13 @@ Tests are done on Ubuntu with 16 GB RAM / Intel i7 / GTX 1050Ti Max-Q. We make s
 
 ## Code structure
 
-![code structure](https://github.com/werner-duvaud/muzero-general/blob/master/docs/code-structure-werner-duvaud.png)
+![code structure](docs/code-structure-werner-duvaud.png)
 
 Network summary:
 
 <p align="center">
 <a href="https://github.com/werner-duvaud/muzero-general/blob/master/docs/muzero-network-werner-duvaud.png">
-<img src="https://github.com/werner-duvaud/muzero-general/blob/master/docs/muzero-network-werner-duvaud.png" width="250"/>
+<img src="docs/muzero-network-werner-duvaud.png" width="250"/>
 </a>
 </p>
 

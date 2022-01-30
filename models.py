@@ -1,7 +1,11 @@
 import math
 from abc import ABC, abstractmethod
+from functools import lru_cache
 
 import torch
+
+
+data_parallel = lambda x: x
 
 
 class MuZeroNetwork:
@@ -95,7 +99,7 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
         self.action_space_size = action_space_size
         self.full_support_size = 2 * support_size + 1
 
-        self.representation_network = torch.nn.DataParallel(
+        self.representation_network = data_parallel(
             mlp(
                 observation_shape[0]
                 * observation_shape[1]
@@ -107,21 +111,21 @@ class MuZeroFullyConnectedNetwork(AbstractNetwork):
             )
         )
 
-        self.dynamics_encoded_state_network = torch.nn.DataParallel(
+        self.dynamics_encoded_state_network = data_parallel(
             mlp(
                 encoding_size + self.action_space_size,
                 fc_dynamics_layers,
                 encoding_size,
             )
         )
-        self.dynamics_reward_network = torch.nn.DataParallel(
+        self.dynamics_reward_network = data_parallel(
             mlp(encoding_size, fc_reward_layers, self.full_support_size)
         )
 
-        self.prediction_policy_network = torch.nn.DataParallel(
+        self.prediction_policy_network = data_parallel(
             mlp(encoding_size, fc_policy_layers, self.action_space_size)
         )
-        self.prediction_value_network = torch.nn.DataParallel(
+        self.prediction_value_network = data_parallel(
             mlp(encoding_size, fc_value_layers, self.full_support_size)
         )
 
@@ -479,7 +483,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             else (reduced_channels_policy * observation_shape[1] * observation_shape[2])
         )
 
-        self.representation_network = torch.nn.DataParallel(
+        self.representation_network = data_parallel(
             RepresentationNetwork(
                 observation_shape,
                 stacked_observations,
@@ -489,7 +493,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             )
         )
 
-        self.dynamics_network = torch.nn.DataParallel(
+        self.dynamics_network = data_parallel(
             DynamicsNetwork(
                 num_blocks,
                 num_channels + 1,
@@ -500,7 +504,7 @@ class MuZeroResidualNetwork(AbstractNetwork):
             )
         )
 
-        self.prediction_network = torch.nn.DataParallel(
+        self.prediction_network = data_parallel(
             PredictionNetwork(
                 action_space_size,
                 num_blocks,
@@ -638,6 +642,19 @@ def mlp(
     return torch.nn.Sequential(*layers)
 
 
+SUPPORTS_CACHE = {}
+def get_support(size, shape, device):
+    key = size, shape, device
+    if key not in SUPPORTS_CACHE:
+        SUPPORTS_CACHE[key] = (
+            torch.tensor([x for x in range(-size, size + 1)])
+            .expand(shape)
+            .float()
+            .to(device=device)
+        )
+    return SUPPORTS_CACHE[key]
+
+
 def support_to_scalar(logits, support_size):
     """
     Transform a categorical representation to a scalar
@@ -645,12 +662,7 @@ def support_to_scalar(logits, support_size):
     """
     # Decode to a scalar
     probabilities = torch.softmax(logits, dim=1)
-    support = (
-        torch.tensor([x for x in range(-support_size, support_size + 1)])
-        .expand(probabilities.shape)
-        .float()
-        .to(device=probabilities.device)
-    )
+    support = get_support(support_size, probabilities.shape, probabilities.device)
     x = torch.sum(support * probabilities, dim=1, keepdim=True)
 
     # Invert the scaling (defined in https://arxiv.org/abs/1805.11593)

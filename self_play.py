@@ -2,13 +2,11 @@ import math
 import time
 
 import numpy
-import ray
 import torch
 
 import models
 
 
-@ray.remote
 class SelfPlay:
     """
     Class which run in a dedicated thread to play games and save them to the replay-buffer.
@@ -28,80 +26,78 @@ class SelfPlay:
         self.model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         self.model.eval()
 
-    def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
-        while ray.get(
-            shared_storage.get_info.remote("training_step")
-        ) < self.config.training_steps and not ray.get(
-            shared_storage.get_info.remote("terminate")
-        ):
-            self.model.set_weights(ray.get(shared_storage.get_info.remote("weights")))
+    def self_play_once_train_mode(self, shared_storage, replay_buffer):
+        self.model.set_weights(shared_storage.get_info("weights"))
 
-            if not test_mode:
-                game_history = self.play_game(
-                    self.config.visit_softmax_temperature_fn(
-                        trained_steps=ray.get(
-                            shared_storage.get_info.remote("training_step")
-                        )
+        game_history = self.play_game(
+            self.config.visit_softmax_temperature_fn(
+                trained_steps=shared_storage.get_info("training_step")
+            ),
+            self.config.temperature_threshold,
+            False,
+            "self",
+            0,
+        )
+
+        replay_buffer.save_game(game_history, shared_storage)
+
+    def self_play_once_test_mode(self, shared_storage):
+        self.model.set_weights(shared_storage.get_info("weights"))
+
+        # Take the best action (no exploration) in test mode
+        game_history = self.play_game(
+            0,
+            self.config.temperature_threshold,
+            False,
+            "self" if len(self.config.players) == 1 else self.config.opponent,
+            self.config.muzero_player,
+        )
+
+        # Save to the shared storage
+        shared_storage.set_info(
+            {
+                "episode_length": len(game_history.action_history) - 1,
+                "total_reward": sum(game_history.reward_history),
+                "mean_value": numpy.mean(
+                    [value for value in game_history.root_values if value]
+                ),
+            }
+        )
+        if 1 < len(self.config.players):
+            shared_storage.set_info(
+                {
+                    "muzero_reward": sum(
+                        reward
+                        for i, reward in enumerate(game_history.reward_history)
+                        if game_history.to_play_history[i - 1]
+                        == self.config.muzero_player
                     ),
-                    self.config.temperature_threshold,
-                    False,
-                    "self",
-                    0,
-                )
+                    "opponent_reward": sum(
+                        reward
+                        for i, reward in enumerate(game_history.reward_history)
+                        if game_history.to_play_history[i - 1]
+                        != self.config.muzero_player
+                    ),
+                }
+            )
 
-                replay_buffer.save_game.remote(game_history, shared_storage)
-
+    def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
+        while shared_storage.get_info("training_step") < self.config.training_steps and not shared_storage.get_info("terminate"):
+            if not test_mode:
+                self.self_play_once_train_mode(shared_storage, replay_buffer)
             else:
-                # Take the best action (no exploration) in test mode
-                game_history = self.play_game(
-                    0,
-                    self.config.temperature_threshold,
-                    False,
-                    "self" if len(self.config.players) == 1 else self.config.opponent,
-                    self.config.muzero_player,
-                )
-
-                # Save to the shared storage
-                shared_storage.set_info.remote(
-                    {
-                        "episode_length": len(game_history.action_history) - 1,
-                        "total_reward": sum(game_history.reward_history),
-                        "mean_value": numpy.mean(
-                            [value for value in game_history.root_values if value]
-                        ),
-                    }
-                )
-                if 1 < len(self.config.players):
-                    shared_storage.set_info.remote(
-                        {
-                            "muzero_reward": sum(
-                                reward
-                                for i, reward in enumerate(game_history.reward_history)
-                                if game_history.to_play_history[i - 1]
-                                == self.config.muzero_player
-                            ),
-                            "opponent_reward": sum(
-                                reward
-                                for i, reward in enumerate(game_history.reward_history)
-                                if game_history.to_play_history[i - 1]
-                                != self.config.muzero_player
-                            ),
-                        }
-                    )
+                self.self_play_once_test_mode(shared_storage, replay_buffer)
 
             # Managing the self-play / training ratio
             if not test_mode and self.config.self_play_delay:
                 time.sleep(self.config.self_play_delay)
             if not test_mode and self.config.ratio:
                 while (
-                    ray.get(shared_storage.get_info.remote("training_step"))
-                    / max(
-                        1, ray.get(shared_storage.get_info.remote("num_played_steps"))
-                    )
+                    shared_storage.get_info("training_step") / max(1, shared_storage.get_info("num_played_steps"))
                     < self.config.ratio
-                    and ray.get(shared_storage.get_info.remote("training_step"))
+                    and shared_storage.get_info("training_step")
                     < self.config.training_steps
-                    and not ray.get(shared_storage.get_info.remote("terminate"))
+                    and not shared_storage.get_info("terminate")
                 ):
                     time.sleep(0.5)
 
