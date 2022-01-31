@@ -208,7 +208,7 @@ class MuZero:
                     self.training_worker.update_weights_once(self.replay_buffer_worker, self.shared_storage_worker)
                     self.reanalyse_worker.reanalyse_once(self.replay_buffer_worker, self.shared_storage_worker)
 
-                    if (training_step + 1) % 10 == 0:
+                    if (training_step + 1) % 500 == 0:
                         self.test_worker.self_play_once_test_mode(self.shared_storage_worker)
                         self.log_once(writer, progress_bar, training_step)
 
