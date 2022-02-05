@@ -96,30 +96,6 @@ class Trainer:
             }
         )
 
-    def continuous_update_weights(self, replay_buffer, shared_storage):
-        # Wait for the replay buffer to be filled
-        while shared_storage.get_info("num_played_games") < 1:
-            time.sleep(0.1)
-
-        # Training loop
-        while self.training_step < self.config.training_steps and not shared_storage.get_info("terminate"):
-            self.update_weights_once(replay_buffer, shared_storage)
-
-            # Managing the self-play / training ratio
-            if self.config.training_delay:
-                time.sleep(self.config.training_delay)
-            if self.config.ratio:
-                while (
-                    self.training_step
-                    / max(
-                    1, shared_storage.get_info("num_played_steps")
-                )
-                    > self.config.ratio
-                    and self.training_step < self.config.training_steps
-                    and not shared_storage.get_info("terminate")
-                ):
-                    time.sleep(0.5)
-
     def update_weights(self, batch):
         """
         Perform one training step.

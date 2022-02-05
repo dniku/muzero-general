@@ -110,6 +110,8 @@ class MuZeroConfig:
         self.training_delay = 0  # Number of seconds to wait after each training step
         self.ratio = 1.5  # Desired training steps per self played step ratio. Equivalent to a synchronous version, training can take much longer. Set it to None to disable it
 
+        self.test_ratio = 1.0
+
 
     def visit_softmax_temperature_fn(self, trained_steps):
         """

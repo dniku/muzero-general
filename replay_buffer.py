@@ -1,5 +1,4 @@
 import copy
-import time
 
 import numpy
 import torch
@@ -28,7 +27,7 @@ class ReplayBuffer:
         # Fix random generator seed
         numpy.random.seed(self.config.seed)
 
-    def save_game(self, game_history, shared_storage=None):
+    def save_game(self, game_history, shared_storage):
         if self.config.PER:
             if game_history.priorities is not None:
                 # Avoid read only array when loading replay buffer from disk
@@ -58,9 +57,8 @@ class ReplayBuffer:
             self.total_samples -= len(self.buffer[del_id].root_values)
             del self.buffer[del_id]
 
-        if shared_storage:
-            shared_storage.set_info("num_played_games", self.num_played_games)
-            shared_storage.set_info("num_played_steps", self.num_played_steps)
+        shared_storage.set_info("num_played_games", self.num_played_games)
+        shared_storage.set_info("num_played_steps", self.num_played_steps)
 
     def get_buffer(self):
         return self.buffer
@@ -238,9 +236,7 @@ class ReplayBuffer:
         else:
             value = 0
 
-        for i, reward in enumerate(
-            game_history.reward_history[index + 1 : bootstrap_index + 1]
-        ):
+        for i, reward in enumerate(game_history.reward_history[index + 1 : bootstrap_index + 1]):
             # The value is oriented from the perspective of the current player
             value += (
                 reward
@@ -328,7 +324,7 @@ class Reanalyse:
                 for i in range(len(game_history.root_values))
             ]
 
-            # observations = numpy.array(observations)
+            # observations = np.stack(observations, axis=0)
 
             device = next(self.model.parameters()).device
             observations = torch.tensor(observations).float().to(device)
@@ -345,10 +341,3 @@ class Reanalyse:
         shared_storage.set_info(
             "num_reanalysed_games", self.num_reanalysed_games
         )
-
-    def reanalyse(self, replay_buffer, shared_storage):
-        while shared_storage.get_info("num_played_games") < 1:
-            time.sleep(0.1)
-
-        while shared_storage.get_info("training_step") < self.config.training_steps and not shared_storage.get_info("terminate"):
-            self.reanalyse_once(replay_buffer, shared_storage)

@@ -23,16 +23,14 @@ class SelfPlay:
         # Initialize the network
         self.model = models.MuZeroNetwork(self.config)
         self.model.set_weights(initial_checkpoint["weights"])
-        self.model.to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        self.model.to(torch.device("cuda" if config.selfplay_on_gpu else "cpu"))
         self.model.eval()
 
     def self_play_once_train_mode(self, shared_storage, replay_buffer):
         self.model.set_weights(shared_storage.get_info("weights"))
 
         game_history = self.play_game(
-            self.config.visit_softmax_temperature_fn(
-                trained_steps=shared_storage.get_info("training_step")
-            ),
+            self.config.visit_softmax_temperature_fn(trained_steps=shared_storage.get_info("training_step")),
             self.config.temperature_threshold,
             False,
             "self",
@@ -53,6 +51,8 @@ class SelfPlay:
             self.config.muzero_player,
         )
 
+        info = shared_storage.get_info(["num_tested_games", "num_tested_steps"])
+
         # Save to the shared storage
         shared_storage.set_info(
             {
@@ -61,6 +61,8 @@ class SelfPlay:
                 "mean_value": numpy.mean(
                     [value for value in game_history.root_values if value]
                 ),
+                "num_tested_games": info["num_tested_games"] + 1,
+                "num_tested_steps": info["num_tested_steps"] + len(game_history.root_values),
             }
         )
         if 1 < len(self.config.players):
@@ -81,31 +83,7 @@ class SelfPlay:
                 }
             )
 
-    def continuous_self_play(self, shared_storage, replay_buffer, test_mode=False):
-        while shared_storage.get_info("training_step") < self.config.training_steps and not shared_storage.get_info("terminate"):
-            if not test_mode:
-                self.self_play_once_train_mode(shared_storage, replay_buffer)
-            else:
-                self.self_play_once_test_mode(shared_storage, replay_buffer)
-
-            # Managing the self-play / training ratio
-            if not test_mode and self.config.self_play_delay:
-                time.sleep(self.config.self_play_delay)
-            if not test_mode and self.config.ratio:
-                while (
-                    shared_storage.get_info("training_step") / max(1, shared_storage.get_info("num_played_steps"))
-                    < self.config.ratio
-                    and shared_storage.get_info("training_step")
-                    < self.config.training_steps
-                    and not shared_storage.get_info("terminate")
-                ):
-                    time.sleep(0.5)
-
-        self.close_game()
-
-    def play_game(
-        self, temperature, temperature_threshold, render, opponent, muzero_player
-    ):
+    def play_game(self, temperature, temperature_threshold, render, opponent, muzero_player):
         """
         Play one game with actions based on the Monte Carlo tree search at each moves.
         """
@@ -122,15 +100,14 @@ class SelfPlay:
             self.game.render()
 
         with torch.no_grad():
-            while (
-                not done and len(game_history.action_history) <= self.config.max_moves
-            ):
+            while (not done and len(game_history.action_history) <= self.config.max_moves):
                 assert (
                     len(numpy.array(observation).shape) == 3
                 ), f"Observation should be 3 dimensionnal instead of {len(numpy.array(observation).shape)} dimensionnal. Got observation of shape: {numpy.array(observation).shape}"
                 assert (
                     numpy.array(observation).shape == self.config.observation_shape
                 ), f"Observation should match the observation_shape defined in MuZeroConfig. Expected {self.config.observation_shape} but got {numpy.array(observation).shape}."
+
                 stacked_observations = game_history.get_stacked_observations(
                     -1,
                     self.config.stacked_observations,
@@ -475,7 +452,7 @@ class Node:
 
 class GameHistory:
     """
-    Store only usefull information of a self-play game.
+    Store only useful information of a self-play game.
     """
 
     def __init__(self):
