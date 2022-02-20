@@ -192,6 +192,9 @@ class MCTS:
         # Expanding root to enable adding exploration noise
         root.expand(legal_actions, reward, policy_logits, hidden_state)
 
+        # Update root value and visit count
+        self.backpropagate([root], root_predicted_value, min_max_stats)
+
         if add_exploration_noise:
             root.add_exploration_noise(
                 dirichlet_alpha=self.config.root_dirichlet_alpha,
