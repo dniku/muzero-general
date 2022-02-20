@@ -48,19 +48,7 @@ class MuZeroConfig:
 
 
         ### Network
-        self.network = "fullyconnected"  # "resnet" / "fullyconnected"
         self.support_size = 10  # Value and reward are scaled (with almost sqrt) and encoded on a vector with a range of -support_size to support_size. Choose it so that support_size <= sqrt(max(abs(discounted reward)))
-
-        # Residual Network
-        self.downsample = False  # Downsample observations before representation network, False / "CNN" (lighter) / "resnet" (See paper appendix Network Architecture)
-        self.blocks = 1  # Number of blocks in the ResNet
-        self.channels = 2  # Number of channels in the ResNet
-        self.reduced_channels_reward = 2  # Number of channels in reward head
-        self.reduced_channels_value = 2  # Number of channels in value head
-        self.reduced_channels_policy = 2  # Number of channels in policy head
-        self.resnet_fc_reward_layers = []  # Define the hidden layers in the reward head of the dynamic network
-        self.resnet_fc_value_layers = []  # Define the hidden layers in the value head of the prediction network
-        self.resnet_fc_policy_layers = []  # Define the hidden layers in the policy head of the prediction network
 
         # Fully Connected Network
         self.encoding_size = 8
@@ -73,7 +61,12 @@ class MuZeroConfig:
 
 
         ### Training
-        self.results_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../results", os.path.basename(__file__)[:-3], datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S"))  # Path to store the model weights and TensorBoard logs
+        self.results_path = os.path.join(
+            os.path.dirname(os.path.realpath(__file__)),
+            "../results",
+            os.path.basename(__file__)[:-3],
+            datetime.datetime.now().strftime("%Y-%m-%d--%H-%M-%S")
+        )  # Path to store the model weights and TensorBoard logs
         self.save_model = True  # Save the checkpoint in results_path as model.checkpoint
         self.training_steps = 10000  # Total number of training steps (ie weights update according to a batch)
         self.batch_size = 128  # Number of parts of games to train on at each training step
@@ -83,7 +76,6 @@ class MuZeroConfig:
 
         self.optimizer = "Adam"  # "Adam" or "SGD". Paper uses SGD
         self.weight_decay = 1e-4  # L2 weights regularization
-        self.momentum = 0.9  # Used only if optimizer is SGD
 
         # Exponential learning rate schedule
         self.lr_init = 0.02  # Initial learning rate
@@ -110,7 +102,7 @@ class MuZeroConfig:
         self.training_delay = 0  # Number of seconds to wait after each training step
         self.ratio = 1.5  # Desired training steps per self played step ratio. Equivalent to a synchronous version, training can take much longer. Set it to None to disable it
 
-        self.test_ratio = 1.0
+        self.test_period = 500
 
 
     def visit_softmax_temperature_fn(self, trained_steps):

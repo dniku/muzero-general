@@ -1,165 +1,5 @@
-from abc import ABC, abstractmethod
-
 import torch
-
-
-class MuZeroNetwork:
-    def __new__(cls, config):
-        if config.network == "fullyconnected":
-            return MuZeroFullyConnectedNetwork(
-                config.observation_shape,
-                config.stacked_observations,
-                len(config.action_space),
-                config.encoding_size,
-                config.fc_reward_layers,
-                config.fc_value_layers,
-                config.fc_policy_layers,
-                config.fc_representation_layers,
-                config.fc_dynamics_layers,
-                config.support_size,
-            )
-        else:
-            raise NotImplementedError(
-                'The network parameter should be "fullyconnected" or "resnet".'
-            )
-
-
-def dict_to_cpu(dictionary):
-    cpu_dict = {}
-    for key, value in dictionary.items():
-        if isinstance(value, torch.Tensor):
-            cpu_dict[key] = value.cpu()
-        elif isinstance(value, dict):
-            cpu_dict[key] = dict_to_cpu(value)
-        else:
-            cpu_dict[key] = value
-    return cpu_dict
-
-
-class AbstractNetwork(ABC, torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        pass
-
-    @abstractmethod
-    def initial_inference(self, observation):
-        pass
-
-    @abstractmethod
-    def recurrent_inference(self, encoded_state, action):
-        pass
-
-    def get_weights(self):
-        return dict_to_cpu(self.state_dict())
-
-    def set_weights(self, weights):
-        self.load_state_dict(weights)
-
-
-##################################
-######## Fully Connected #########
-
-
-class MuZeroFullyConnectedNetwork(AbstractNetwork):
-    def __init__(
-        self,
-        observation_shape,
-        stacked_observations,
-        action_space_size,
-        encoding_size,
-        fc_reward_layers,
-        fc_value_layers,
-        fc_policy_layers,
-        fc_representation_layers,
-        fc_dynamics_layers,
-        support_size,
-    ):
-        super().__init__()
-        self.action_space_size = action_space_size
-        self.full_support_size = 2 * support_size + 1
-
-        observation_size = (
-            observation_shape[0]
-            * observation_shape[1]
-            * observation_shape[2]
-            * (stacked_observations + 1)
-            + stacked_observations * observation_shape[1] * observation_shape[2]
-        )
-        self.representation_network = self._mlp(observation_size, fc_representation_layers, encoding_size)
-        self.dynamics_encoded_state_network = self._mlp(encoding_size + self.action_space_size, fc_dynamics_layers, encoding_size)
-        self.dynamics_reward_network = self._mlp(encoding_size, fc_reward_layers, self.full_support_size)
-        self.prediction_policy_network = self._mlp(encoding_size, fc_policy_layers, self.action_space_size)
-        self.prediction_value_network = self._mlp(encoding_size, fc_value_layers, self.full_support_size)
-
-    def prediction(self, encoded_state):
-        policy_logits = self.prediction_policy_network(encoded_state)
-        value = self.prediction_value_network(encoded_state)
-        return policy_logits, value
-
-    def representation(self, observation):
-        encoded_state = self.representation_network(observation.view(observation.shape[0], -1))
-
-        # Scale encoded state between [0, 1] (See appendix paper Training)
-        encoded_state_normalized = self._min_max_scale(encoded_state)
-
-        return encoded_state_normalized
-
-    def dynamics(self, encoded_state, action):
-        # Stack encoded_state with a game specific one hot encoded action (See paper appendix Network Architecture)
-        action_one_hot = torch.zeros((action.shape[0], self.action_space_size)).to(action.device).float()
-        action_one_hot.scatter_(1, action.long(), 1.0)
-        x = torch.cat((encoded_state, action_one_hot), dim=1)
-
-        next_encoded_state = self.dynamics_encoded_state_network(x)
-
-        reward = self.dynamics_reward_network(next_encoded_state)
-
-        # Scale encoded state between [0, 1] (See paper appendix Training)
-        next_encoded_state_normalized = self._min_max_scale(next_encoded_state)
-
-        return next_encoded_state_normalized, reward
-
-    def initial_inference(self, observation):
-        encoded_state = self.representation(observation)
-        policy_logits, value = self.prediction(encoded_state)
-        # reward equal to 0 for consistency
-        reward = torch.log(
-            (
-                torch.zeros(1, self.full_support_size)
-                .scatter(1, torch.tensor([[self.full_support_size // 2]]).long(), 1.0)
-                .repeat(len(observation), 1)
-                .to(observation.device)
-            )
-        )
-
-        return value, reward, policy_logits, encoded_state
-
-    def recurrent_inference(self, encoded_state, action):
-        next_encoded_state, reward = self.dynamics(encoded_state, action)
-        policy_logits, value = self.prediction(next_encoded_state)
-        return value, reward, policy_logits, next_encoded_state
-
-    @staticmethod
-    def _mlp(input_size, layer_sizes, output_size, output_activation=torch.nn.Identity, activation=torch.nn.ELU):
-        sizes = [input_size] + layer_sizes + [output_size]
-        layers = []
-        for i in range(len(sizes) - 1):
-            act = activation if i < len(sizes) - 2 else output_activation
-            layers += [torch.nn.Linear(sizes[i], sizes[i + 1]), act()]
-        return torch.nn.Sequential(*layers)
-
-    @staticmethod
-    def _min_max_scale(tensor, eps=1e-5):
-        min_tensor = tensor.min(1, keepdim=True)[0]
-        max_tensor = tensor.max(1, keepdim=True)[0]
-        scale_tensor = max_tensor - min_tensor
-        scale_tensor[scale_tensor < eps] += eps
-        tensor_normalized = (tensor - min_tensor) / scale_tensor
-        return tensor_normalized
-
-
-###### End Fully Connected #######
-##################################
+from torch import nn
 
 
 SUPPORTS_CACHE = {}
@@ -215,3 +55,136 @@ def scalar_to_support(x, support_size):
     indexes = indexes.masked_fill_(2 * support_size < indexes, 0.0)
     logits.scatter_(2, indexes.long().unsqueeze(-1), prob.unsqueeze(-1))
     return logits
+
+
+def dict_to_cpu(dictionary):
+    cpu_dict = {}
+    for key, value in dictionary.items():
+        if isinstance(value, torch.Tensor):
+            cpu_dict[key] = value.cpu()
+        elif isinstance(value, dict):
+            cpu_dict[key] = dict_to_cpu(value)
+        else:
+            cpu_dict[key] = value
+    return cpu_dict
+
+
+def make_mlp(input_size, layer_sizes, output_size, output_activation=nn.Identity, activation=nn.ELU):
+    sizes = [input_size] + layer_sizes + [output_size]
+    layers = []
+    for i in range(len(sizes) - 1):
+        act = activation if i < len(sizes) - 2 else output_activation
+        layers += [nn.Linear(sizes[i], sizes[i + 1]), act()]
+    return nn.Sequential(*layers)
+
+
+def min_max_scale(tensor, eps=1e-5):
+    min_tensor = tensor.min(1, keepdim=True)[0]
+    max_tensor = tensor.max(1, keepdim=True)[0]
+    scale_tensor = max_tensor - min_tensor
+    scale_tensor[scale_tensor < eps] += eps
+    tensor_normalized = (tensor - min_tensor) / scale_tensor
+    return tensor_normalized
+
+
+class MuZeroNetwork:
+    def __new__(cls, config):
+        return MuZeroFullyConnectedNetwork(
+            config.observation_shape,
+            config.stacked_observations,
+            len(config.action_space),
+            config.encoding_size,
+            config.fc_reward_layers,
+            config.fc_value_layers,
+            config.fc_policy_layers,
+            config.fc_representation_layers,
+            config.fc_dynamics_layers,
+            config.support_size,
+        )
+
+
+class MuZeroFullyConnectedNetwork(nn.Module):
+    def __init__(
+        self,
+        observation_shape,
+        stacked_observations,
+        action_space_size,
+        encoding_size,
+        fc_reward_layers,
+        fc_value_layers,
+        fc_policy_layers,
+        fc_representation_layers,
+        fc_dynamics_layers,
+        support_size,
+    ):
+        super().__init__()
+        self.action_space_size = action_space_size
+        self.full_support_size = 2 * support_size + 1
+
+        observation_size = (
+            observation_shape[0]
+            * observation_shape[1]
+            * observation_shape[2]
+            * (stacked_observations + 1)
+            + stacked_observations * observation_shape[1] * observation_shape[2]
+        )
+        self.representation_network = make_mlp(observation_size, fc_representation_layers, encoding_size)
+        self.dynamics_encoded_state_network = make_mlp(encoding_size + self.action_space_size, fc_dynamics_layers, encoding_size)
+        self.dynamics_reward_network = make_mlp(encoding_size, fc_reward_layers, self.full_support_size)
+        self.prediction_policy_network = make_mlp(encoding_size, fc_policy_layers, self.action_space_size)
+        self.prediction_value_network = make_mlp(encoding_size, fc_value_layers, self.full_support_size)
+
+    def prediction(self, encoded_state):
+        policy_logits = self.prediction_policy_network(encoded_state)
+        value = self.prediction_value_network(encoded_state)
+        return policy_logits, value
+
+    def representation(self, observation):
+        encoded_state = self.representation_network(observation.view(observation.shape[0], -1))
+
+        # Scale encoded state between [0, 1] (See appendix paper Training)
+        encoded_state_normalized = min_max_scale(encoded_state)
+
+        return encoded_state_normalized
+
+    def dynamics(self, encoded_state, action):
+        # Stack encoded_state with a game specific one hot encoded action (See paper appendix Network Architecture)
+        action_one_hot = torch.zeros((action.shape[0], self.action_space_size)).to(action.device).float()
+        action_one_hot.scatter_(1, action.long(), 1.0)
+        x = torch.cat((encoded_state, action_one_hot), dim=1)
+
+        next_encoded_state = self.dynamics_encoded_state_network(x)
+
+        reward = self.dynamics_reward_network(next_encoded_state)
+
+        # Scale encoded state between [0, 1] (See paper appendix Training)
+        next_encoded_state_normalized = min_max_scale(next_encoded_state)
+
+        return next_encoded_state_normalized, reward
+
+    def initial_inference(self, observation):
+        encoded_state = self.representation(observation)
+        policy_logits, value = self.prediction(encoded_state)
+        batch_size = observation.shape[0]
+        # Since we replace regression with classification, reward is represented as a vector instead of 1 value.
+        # The result of the following lines looks like log([0, ..., 0, 1, 0, ..., 0]), which means that we place
+        # a likelihood of 1 onto the bin that corresponds to reward=0.
+        reward = torch.log(
+            torch.zeros(1, self.full_support_size)
+            .scatter(1, torch.tensor([[self.full_support_size // 2]]).long(), 1.0)
+            .repeat(batch_size, 1)
+            .to(observation.device)
+        )
+
+        return value, reward, policy_logits, encoded_state
+
+    def recurrent_inference(self, encoded_state, action):
+        next_encoded_state, reward = self.dynamics(encoded_state, action)
+        policy_logits, value = self.prediction(next_encoded_state)
+        return value, reward, policy_logits, next_encoded_state
+
+    def get_weights(self):
+        return dict_to_cpu(self.state_dict())
+
+    def set_weights(self, weights):
+        self.load_state_dict(weights)
