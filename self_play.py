@@ -59,12 +59,7 @@ class SelfPlay:
             }
         )
 
-    def play_game(
-            self,
-            temperature: float,
-            temperature_threshold: Optional[float],
-            render: bool,
-    ):
+    def play_game(self, temperature: float, temperature_threshold: Optional[float], render: bool):
         """
         Play one game with actions based on the Monte Carlo tree search at each moves.
         """

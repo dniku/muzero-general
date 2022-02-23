@@ -1,8 +1,8 @@
 import copy
-import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 import models
 
@@ -36,9 +36,7 @@ class Trainer:
 
         if initial_checkpoint["optimizer_state"] is not None:
             print("Loading optimizer...\n")
-            self.optimizer.load_state_dict(
-                copy.deepcopy(initial_checkpoint["optimizer_state"])
-            )
+            self.optimizer.load_state_dict(copy.deepcopy(initial_checkpoint["optimizer_state"]))
 
     def update_weights_once(self, replay_buffer, shared_storage):
         next_batch = replay_buffer.get_batch()
@@ -59,14 +57,12 @@ class Trainer:
 
         # Save to the shared storage
         if self.training_step % self.config.checkpoint_interval == 0:
-            shared_storage.set_info(
-                {
-                    "weights": copy.deepcopy(self.model.get_weights()),
-                    "optimizer_state": copy.deepcopy(
-                        models.dict_to_cpu(self.optimizer.state_dict())
-                    ),
-                }
-            )
+            shared_storage.set_info({
+                "weights": copy.deepcopy(self.model.get_weights()),
+                "optimizer_state": copy.deepcopy(
+                    models.dict_to_cpu(self.optimizer.state_dict())
+                ),
+            })
             if self.config.save_model:
                 shared_storage.save_checkpoint()
         shared_storage.set_info(
@@ -96,18 +92,18 @@ class Trainer:
         ) = batch
 
         # Keep values as scalars for calculating the priorities for the prioritized replay
-        target_value_scalar = np.array(target_value, dtype="float32")
+        target_value_scalar = np.array(target_value, dtype=np.float32)
         priorities = np.zeros_like(target_value_scalar)
 
         device = next(self.model.parameters()).device
         if self.config.PER:
-            weight_batch = torch.tensor(weight_batch.copy()).float().to(device)
-        observation_batch = torch.tensor(np.stack(observation_batch, axis=0)).float().to(device)
-        action_batch = torch.tensor(action_batch).long().to(device).unsqueeze(-1)
-        target_value = torch.tensor(target_value).float().to(device)
-        target_reward = torch.tensor(target_reward).float().to(device)
-        target_policy = torch.tensor(target_policy).float().to(device)
-        gradient_scale_batch = torch.tensor(gradient_scale_batch).float().to(device)
+            weight_batch = torch.tensor(weight_batch.copy(), dtype=torch.float32, device=device)
+        observation_batch = torch.tensor(observation_batch, dtype=torch.float32, device=device)
+        action_batch = torch.tensor(action_batch, dtype=torch.int64, device=device).unsqueeze(dim=-1)
+        target_value = torch.tensor(target_value, dtype=torch.float32, device=device)
+        target_reward = torch.tensor(target_reward, dtype=torch.float32, device=device)
+        target_policy = torch.tensor(target_policy, dtype=torch.float32, device=device)
+        gradient_scale_batch = torch.tensor(gradient_scale_batch, dtype=torch.float32, device=device)
         # observation_batch: batch, channels, height, width
         # action_batch: batch, num_unroll_steps+1, 1 (unsqueeze)
         # target_value: batch, num_unroll_steps+1
@@ -116,16 +112,12 @@ class Trainer:
         # gradient_scale_batch: batch, num_unroll_steps+1
 
         target_value = models.scalar_to_support(target_value, self.config.support_size)
-        target_reward = models.scalar_to_support(
-            target_reward, self.config.support_size
-        )
+        target_reward = models.scalar_to_support(target_reward, self.config.support_size)
         # target_value: batch, num_unroll_steps+1, 2*support_size+1
         # target_reward: batch, num_unroll_steps+1, 2*support_size+1
 
-        ## Generate predictions
-        value, reward, policy_logits, hidden_state = self.model.initial_inference(
-            observation_batch
-        )
+        ## Generate predictions by unrolling model
+        value, reward, policy_logits, hidden_state = self.model.initial_inference(observation_batch)
         predictions = [(value, reward, policy_logits)]
         for i in range(1, action_batch.shape[1]):
             value, reward, policy_logits, hidden_state = self.model.recurrent_inference(
@@ -138,11 +130,13 @@ class Trainer:
 
         ## Compute losses
         value_loss, reward_loss, policy_loss = (0, 0, 0)
+
+        ### Handle first timestep in a special way
         value, reward, policy_logits = predictions[0]
-        # Ignore reward loss for the first batch step
+        # Ignore reward loss for the first timestep step b/c reward prediction is forced to 0 and loss is NaN
         current_value_loss, _, current_policy_loss = self.loss_function(
-            value.squeeze(-1),
-            reward.squeeze(-1),
+            value.squeeze(axis=-1),
+            reward.squeeze(axis=-1),
             policy_logits,
             target_value[:, 0],
             target_reward[:, 0],
@@ -156,13 +150,11 @@ class Trainer:
             .detach()
             .cpu()
             .numpy()
-            .squeeze()
+            .squeeze(axis=-1)
         )
-        priorities[:, 0] = (
-            np.abs(pred_value_scalar - target_value_scalar[:, 0])
-            ** self.config.PER_alpha
-        )
+        priorities[:, 0] = self.compute_priorities(pred_value_scalar, target_value_scalar[:, 0])
 
+        ### Handle remaining timesteps
         for i in range(1, len(predictions)):
             value, reward, policy_logits = predictions[i]
             (
@@ -170,8 +162,8 @@ class Trainer:
                 current_reward_loss,
                 current_policy_loss,
             ) = self.loss_function(
-                value.squeeze(-1),
-                reward.squeeze(-1),
+                value.squeeze(axis=-1),
+                reward.squeeze(axis=-1),
                 policy_logits,
                 target_value[:, i],
                 target_reward[:, i],
@@ -179,15 +171,10 @@ class Trainer:
             )
 
             # Scale gradient by the number of unroll steps (See paper appendix Training)
-            current_value_loss.register_hook(
-                lambda grad: grad / gradient_scale_batch[:, i]
-            )
-            current_reward_loss.register_hook(
-                lambda grad: grad / gradient_scale_batch[:, i]
-            )
-            current_policy_loss.register_hook(
-                lambda grad: grad / gradient_scale_batch[:, i]
-            )
+            # Note: i=i is due to a peculiarity in how lambdas capture parameters in closures
+            current_value_loss.register_hook(lambda grad, i=i: grad / gradient_scale_batch[:, i])
+            current_reward_loss.register_hook(lambda grad, i=i: grad / gradient_scale_batch[:, i])
+            current_policy_loss.register_hook(lambda grad, i=i: grad / gradient_scale_batch[:, i])
 
             value_loss += current_value_loss
             reward_loss += current_reward_loss
@@ -199,12 +186,9 @@ class Trainer:
                 .detach()
                 .cpu()
                 .numpy()
-                .squeeze()
+                .squeeze(axis=-1)
             )
-            priorities[:, i] = (
-                np.abs(pred_value_scalar - target_value_scalar[:, i])
-                ** self.config.PER_alpha
-            )
+            priorities[:, i] = self.compute_priorities(pred_value_scalar, target_value_scalar[:, i])
 
         # Scale the value loss, paper recommends by 0.25 (See paper appendix Reanalyze)
         loss = value_loss * self.config.value_loss_weight + reward_loss + policy_loss
@@ -233,11 +217,9 @@ class Trainer:
         """
         Update learning rate
         """
-        lr = self.config.lr_init * self.config.lr_decay_rate ** (
-            self.training_step / self.config.lr_decay_steps
-        )
+        lr = self.config.lr_init * self.config.lr_decay_rate ** (self.training_step / self.config.lr_decay_steps)
         for param_group in self.optimizer.param_groups:
-            param_group["lr"] = lr
+            param_group['lr'] = lr
 
     @staticmethod
     def loss_function(
@@ -249,7 +231,15 @@ class Trainer:
         target_policy,
     ):
         # Cross-entropy seems to have a better convergence than MSE
-        value_loss = (-target_value * torch.nn.LogSoftmax(dim=1)(value)).sum(1)
-        reward_loss = (-target_reward * torch.nn.LogSoftmax(dim=1)(reward)).sum(1)
-        policy_loss = (-target_policy * torch.nn.LogSoftmax(dim=1)(policy_logits)).sum(1)
+        value_loss = F.cross_entropy(value, target_value, reduction='none')
+        reward_loss = F.cross_entropy(reward, target_reward, reduction='none')
+        policy_loss = F.cross_entropy(policy_logits, target_policy, reduction='none')
+
         return value_loss, reward_loss, policy_loss
+
+    def compute_priorities(self, predicted, target):
+        assert isinstance(predicted, np.ndarray)
+        assert isinstance(target, np.ndarray)
+        assert predicted.shape == target.shape
+
+        return np.abs(predicted - target) ** self.config.PER_alpha
