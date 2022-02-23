@@ -31,16 +31,15 @@ class ReplayBuffer:
                 game_history.priorities = np.copy(game_history.priorities)
             else:
                 # Initial priorities for the prioritized replay (See paper appendix Training)
+                # Note: this can be made more efficient
+                target_values = np.array([
+                    self.compute_target_value(game_history, i)
+                    for i in range(len(game_history.root_values))
+                ])
+                root_values = np.array(game_history.root_values)
 
-                priorities = []
-                for i, root_value in enumerate(game_history.root_values):
-                    priority = (
-                        np.abs(root_value - self.compute_target_value(game_history, i))
-                        ** self.config.PER_alpha
-                    )
-                    priorities.append(priority)
-
-                game_history.priorities = np.array(priorities, dtype=np.float32)
+                priorities = np.abs(root_values - target_values) ** self.config.PER_alpha
+                game_history.priorities = priorities.astype(np.float32)
                 game_history.game_priority = np.max(game_history.priorities)
 
         self.buffer[self.num_played_games] = game_history
@@ -101,15 +100,15 @@ class ReplayBuffer:
         # weight_batch: batch
         # gradient_scale_batch: batch, num_unroll_steps+1
         return (
-            index_batch,
+            np.stack(index_batch, axis=0).astype(np.int64),
             (
-                observation_batch,
-                action_batch,
-                value_batch,
-                reward_batch,
-                policy_batch,
-                weight_batch,
-                gradient_scale_batch,
+                np.stack(observation_batch, axis=0).astype(np.float32),
+                np.stack(action_batch, axis=0).astype(np.int64),
+                np.stack(value_batch, axis=0).astype(np.float32),
+                np.stack(reward_batch, axis=0).astype(np.float32),
+                np.stack(policy_batch, axis=0).astype(np.float32),
+                np.stack(weight_batch, axis=0).astype(np.float32) if self.config.PER else None,
+                np.stack(gradient_scale_batch, axis=0).astype(np.float32),
             ),
         )
 
@@ -262,16 +261,13 @@ class Reanalyse:
             game_history.get_observation(i)
             for i in range(len(game_history.root_values))
         ]
+        observations = np.stack(observations, axis=0)
 
         device = next(self.model.parameters()).device
-        observations = torch.tensor(np.stack(observations, axis=0)).float().to(device)
-        values = models.support_to_scalar(
-            self.model.initial_inference(observations)[0],
-            self.config.support_size,
-        )
-        game_history.reanalysed_predicted_root_values = (
-            torch.squeeze(values).detach().cpu().numpy()
-        )
+        observations = torch.tensor(observations, dtype=torch.float32, device=device)
+        value, _reward, _policy_logits, _encoded_state = self.model.initial_inference(observations)
+        values = models.support_to_scalar(value, self.config.support_size)
+        game_history.reanalysed_predicted_root_values = values.squeeze(dim=-1).detach().cpu().numpy()
 
         replay_buffer.update_game_history(game_id, game_history)
         self.num_reanalysed_games += 1
